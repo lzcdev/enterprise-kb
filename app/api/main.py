@@ -9,12 +9,16 @@
 - 自动生成 OpenAPI/Swagger 文档，前后端联调成本低。
 - 异步友好，适合 LLM 这种慢 IO（本项目先用同步演示，生产可转 async）。
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.models import Answer, Question
 from app.rag_service import RAGService
+from app.tenancy.registry import (
+    QuotaExceededError, SourceTypeNotAllowedError,
+    TenantNotFoundError, TenantSuspendedError,
+)
 
 app = FastAPI(
     title="企业知识库问答 API",
@@ -23,7 +27,8 @@ app = FastAPI(
 )
 
 # 服务单例：避免每个请求重建 embedder/store（生产用依赖注入 + 连接池）
-_service = RAGService()
+# enforce_tenant=True：外部 HTTP 请求是不可信输入，必须强制校验租户身份
+_service = RAGService(enforce_tenant=True)
 
 
 def bootstrap_demo_index() -> int:
@@ -77,6 +82,8 @@ def ask(question: Question):
 
     请求体用 Question（question/tenant_id/top_k），
     响应体用 Answer（answer/sources/question/elapsed_ms），pydantic 自动校验。
+    租户身份由 _service(enforce_tenant=True) 强制校验，越权抛出的 TenantError
+    由下方专用 handler 映射成对应 HTTP 状态码。
     """
     answer = _service.answer(
         question.question,
@@ -84,6 +91,43 @@ def ask(question: Question):
         top_k=question.top_k,
     )
     return answer
+
+
+@app.get("/tenants")
+def list_tenants():
+    """管理接口：列出已注册租户（生产需加管理员鉴权，这里仅演示）。"""
+    return {"tenants": _service.registry.list_tenants()}
+
+
+@app.get("/tenants/{tenant_id}/config")
+def tenant_config(tenant_id: str, source_type: str = "pdf"):
+    """管理接口：查看某租户的最终生效配置与每层来源，排障用。
+
+    客户说"我调的参数没生效"时，看 sources 就知道被哪层覆盖了。
+    """
+    cfg = _service.registry.resolve_config(tenant_id, source_type=source_type)
+    return {**cfg.as_dict(), "sources": cfg.sources}
+
+
+# ===== 租户异常 → HTTP 状态码映射：不同拒绝原因给前端不同语义 =====
+@app.exception_handler(TenantNotFoundError)
+async def tenant_not_found_handler(request: Request, exc: TenantNotFoundError):
+    return JSONResponse(status_code=404, content={"detail": str(exc), "code": "TENANT_NOT_FOUND"})
+
+
+@app.exception_handler(TenantSuspendedError)
+async def tenant_suspended_handler(request: Request, exc: TenantSuspendedError):
+    return JSONResponse(status_code=403, content={"detail": str(exc), "code": "TENANT_SUSPENDED"})
+
+
+@app.exception_handler(SourceTypeNotAllowedError)
+async def source_type_denied_handler(request: Request, exc: SourceTypeNotAllowedError):
+    return JSONResponse(status_code=403, content={"detail": str(exc), "code": "SOURCE_TYPE_DENIED"})
+
+
+@app.exception_handler(QuotaExceededError)
+async def quota_exceeded_handler(request: Request, exc: QuotaExceededError):
+    return JSONResponse(status_code=429, content={"detail": str(exc), "code": "QUOTA_EXCEEDED"})
 
 
 @app.exception_handler(Exception)
