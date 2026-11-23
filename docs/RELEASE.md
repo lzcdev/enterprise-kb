@@ -56,6 +56,34 @@ push 到 main 或对 main 的 PR 自动触发，四个卡点：
 没有这些配置时 workflow 会明确失败——**这是预期的**：生产部署必须有真实基础设施，
 不能假装本地跑通就等于能上线。
 
+### 3.1 网页端配置步骤（照着点）
+
+1. **打开设置**：仓库页面 → Settings → Secrets and variables → Actions。
+2. **加 Secrets**（New repository secret，逐个添加）：
+   - `SSH_HOST`：服务器公网 IP。
+   - `SSH_USER`：SSH 登录用户。
+   - `SSH_KEY`：私钥全文（不是 .pub），开头 `-----BEGIN OPENSSH PRIVATE KEY-----`。
+   - `GHCR_TOKEN`：有 `read:packages` 的 GitHub PAT（私有包时必填；公开包可省略）。
+3. **加 Variables**（Variables 标签 → New repository variable）：
+   - `APP_DIR`：服务器上项目目录，如 `/opt/enterprise-kb`，该目录下需有 `deploy/docker-compose.yml` 和 `.env`。
+4. **打开镜像写权限**：Settings → Actions → General → Workflow permissions，选
+   **Read and write permissions**——build job 依赖 `packages: write` 推镜像到 GHCR。
+5. **配分支保护**（让 CI 真正成为卡点）：Settings → Branches → Add branch ruleset，
+   目标 `main`，勾选 "Require status checks to pass"，选中 `quality-gate`，
+   并勾选 "Require branches to be up to date"。这样评测退化时 PR 合不进来。
+6. **验证触发**：`git push` 后到 Actions 标签看 CI 是否绿；CD 到 Actions →
+   CD 部署与灰度发布 → Run workflow，先选 `status` 冒烟（只读、安全）。
+
+### 3.2 两个已修的部署坑（面试可讲）
+
+| 坑 | 现象 | 修法 |
+|---|---|---|
+| 推了镜像但不会被用 | CD 把 `:${sha}` 镜像推到 GHCR，compose 的 api 服务只有 `build` 没有 `image`，`docker compose pull api` 拉不到 | compose 增加 `image: ${IMAGE_NAME}:${IMAGE_TAG}`，CD 导出 `IMAGE_TAG=${sha}` 并 `up -d --no-build`，强制用拉下来的镜像 |
+| 灰度状态容器重建即丢 | 切流比例写在 `/app/data/release/state.json`，容器重建后回到初始，灰度白做 | compose 挂 `release_data:/app/data/release` 卷，状态跨容器生命周期持久化 |
+
+**为什么值得讲**：这两个都不是"代码逻辑错"，而是**交付链路的接缝错**——单测和本地验证都发现不了，
+只有真实跑过部署才会暴露。to B 落地时这类问题比算法 bug 更常见。
+
 ## 四、蓝绿发布五步（本地可演示）
 
 ```bash

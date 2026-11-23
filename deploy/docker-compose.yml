@@ -59,7 +59,10 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-minioadmin_change_me}
 
   api:
-    # 用项目根目录的 Dockerfile 构建；context 必须是 .. （deploy/ 的上一级）
+    # 双模式：本地开发用 build 现场构建；CD 用 image 拉取带 commit SHA 的镜像。
+    # 为什么两个都写？docker compose pull 只认 image 字段——只写 build 时，
+    # CI 推到 GHCR 的镜像根本不会被消费，部署的还是服务器上的旧代码。
+    image: ${IMAGE_NAME:-ghcr.io/lzcdev/enterprise-kb}:${IMAGE_TAG:-latest}
     build:
       context: ..
       dockerfile: Dockerfile
@@ -79,6 +82,7 @@ services:
       CHROMA_PERSIST_DIR: /app/data/chroma
     volumes:
       - chroma_data:/app/data/chroma     # 向量库持久化到卷，容器重建不丢
+      - release_data:/app/data/release   # 灰度/切流状态持久化：容器重建后切流比例与回滚窗口不丢
     depends_on:
       postgres:
         condition: service_healthy      # 等 PG 真正接受连接，而非"容器已启动"
@@ -91,6 +95,7 @@ volumes:
   redis_data:
   chroma_data:
   minio_data:
+  release_data:
 
 # 教学说明：
 # 1. 数据卷（volumes）保证容器重启后数据不丢——这就是波次1的"持久化"核心。

@@ -31,7 +31,7 @@ jobs:
       - name: 语法编译检查
         run: python -m compileall -q app scripts
 
-      # 轨道一：工程正确性。62 项 pytest 覆盖控制流、鉴权、租户隔离等。
+      # 轨道一：工程正确性。75 项 pytest 覆盖控制流、鉴权、租户隔离等。
       - name: 单元测试
         run: python -m pytest -q
 

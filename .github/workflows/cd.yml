@@ -70,8 +70,10 @@ jobs:
             cd ${{ vars.APP_DIR }}
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             export IMAGE_TAG=${{ github.sha }}
+            export IMAGE_NAME=ghcr.io/${{ github.repository }}
+            # pull 按 SHA 拉 CI 构建好的镜像；--no-build 确保用拉下来的镜像而非本地构建。
             docker compose pull api
-            docker compose up -d api
+            docker compose up -d --no-build api
             sleep 5
             curl -fsS http://127.0.0.1:8000/health
             echo "部署完成: ${{ inputs.action }} @ ${{ github.sha }}"
