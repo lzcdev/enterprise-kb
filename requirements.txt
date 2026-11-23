@@ -1,0 +1,30 @@
+# ===== Web 框架 =====
+fastapi==0.115.6
+uvicorn==0.34.0
+python-multipart==0.0.20
+
+# ===== 数据模型与配置 =====
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# ===== 文档解析（三档：PyMuPDF 原型 / Docling 本地生产 / Docling Serve 企业）=====
+pymupdf==1.25.1          # 快速原型通道：纯文本 PDF
+python-docx==1.1.2       # DOCX 解析
+markdown==3.7            # Markdown 解析
+docling==2.37.0          # 主力：结构感知解析，DocLayNet 版面 + TableFormer 表格 + 溯源坐标
+                         # 注：企业档改用 Docling Serve 集群，同一 DoclingDocument 模型免重写
+
+# ===== 向量库 =====
+chromadb==0.5.23         # 原型/本地档；企业档换 Milvus（同一 VectorStore 接口）
+
+# ===== Embedding & Rerank =====
+# Qwen3-Embedding-0.6B：MTEB 多语言 64.33 超过 text-embedding-3-large(58.93)，CPU 可跑
+# 企业档升 Qwen3-4B/8B，用 vLLM / Text-Embeddings-Inference 独立部署
+sentence-transformers==3.4.1
+transformers>=4.51.0     # Qwen3 需要 >=4.51.0，否则 KeyError: 'qwen3'
+
+# ===== LLM SDK =====
+openai==1.59.6           # 兼容 DeepSeek/通义千问的 OpenAI 接口
+
+# ===== 工具 =====
+python-dotenv==1.0.1
