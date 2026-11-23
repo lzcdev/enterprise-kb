@@ -23,12 +23,20 @@ class PyMuPDFParser:
     def parse(self, path: str) -> list[ParsedSection]:
         suffix = Path(path).suffix.lower()
         if suffix == ".pdf":
-            return self._parse_pdf(path)
-        if suffix == ".docx":
-            return self._parse_docx(path)
-        if suffix in (".md", ".txt"):
-            return self._parse_text(path)
-        raise ValueError(f"不支持的文件格式: {suffix}")
+            sections = self._parse_pdf(path)
+        elif suffix == ".docx":
+            sections = self._parse_docx(path)
+        elif suffix in (".md", ".txt"):
+            sections = self._parse_text(path)
+        else:
+            raise ValueError(f"不支持的文件格式: {suffix}")
+        # 溯源字段在解析层注入：parser 唯一知道文件路径的地方。
+        # 若放到建库脚本里补，任何绕过该脚本的调用（如测试/演示）都会丢失 filename，
+        # 最终溯源显示 "unknown" —— 契约字段要在数据诞生的源头填充。
+        filename = Path(path).name
+        for s in sections:
+            s.metadata.setdefault("filename", filename)
+        return sections
 
     def _parse_pdf(self, path: str) -> list[ParsedSection]:
         import fitz  # PyMuPDF，懒加载

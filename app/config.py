@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     RERANK_MODEL: str = "Qwen/Qwen3-Reranker-0.6B"
 
     # ===== LLM 配置 =====
+    # backend: "mock"(零依赖抽取式,验证链路) / "api"(OpenAI兼容接口,需key) / "off"
+    LLM_BACKEND: str = "mock"
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
     LLM_MODEL: str = "deepseek-chat"

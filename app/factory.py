@@ -78,9 +78,11 @@ def get_retriever():
     return Retriever()
 
 
-def get_llm() -> LLM:
-    from app.generation.generator import OpenAILikeLLM
-    return OpenAILikeLLM(
+def get_llm() -> Optional[LLM]:
+    """按 LLM_BACKEND 选生成实现；mock 档零依赖验证控制流。"""
+    from app.generation.generator import get_llm as _build
+    return _build(
+        backend=settings.LLM_BACKEND,
         api_key=settings.LLM_API_KEY,
         base_url=settings.LLM_BASE_URL,
         model=settings.LLM_MODEL,
