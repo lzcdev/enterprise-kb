@@ -41,12 +41,20 @@ def get_embedder() -> Embedder:
         return ApiEmbedder(
             model_name=settings.EMBEDDING_MODEL,
             dimension=settings.EMBEDDING_DIM,
+            api_key=settings.LLM_API_KEY,
+            base_url=settings.LLM_BASE_URL,
         )
+    if backend == "deterministic":
+        from app.retrieval.embedding_local import DeterministicEmbedder
+        return DeterministicEmbedder(dimension=settings.EMBEDDING_DIM)
     raise ValueError(f"未知的 EMBEDDING_BACKEND: {backend}")
 
 
 def get_vectorstore() -> VectorStore:
-    backend = getattr(settings, "VECTORSTORE_BACKEND", "chroma")
+    backend = settings.VECTORSTORE_BACKEND
+    if backend == "memory":
+        from app.retrieval.vectorstore_memory import InMemoryStore
+        return InMemoryStore()
     if backend == "chroma":
         from app.retrieval.vectorstore_chroma import ChromaStore
         return ChromaStore(persist_dir=str(settings.CHROMA_PERSIST_DIR))
@@ -77,9 +85,16 @@ def active_namespace() -> str:
 
     namespace 形如 kb__qwen3-embedding-0.6b__v1，把模型版本编码进名字，
     这样任何时候都能一眼看出某套索引用的是哪个模型生成的向量。
+
+    关键修正：名字必须来自【实际实例化的 embedder.model_id】，而不是配置项
+    EMBEDDING_MODEL。因为 EMBEDDING_BACKEND=deterministic 时实际用的是哈希档，
+    但 EMBEDDING_MODEL 仍写着 Qwen3——若按后者命名，namespace 会说 Qwen3，
+    metadata.embedding_model 却写 deterministic，蓝绿迁移判断版本就会误判。
+    namespace 与 metadata 两个版本标记必须同源，这是迁移正确性的根基。
     """
     configured = getattr(settings, "ACTIVE_NAMESPACE", None)
     if configured:
         return configured
-    safe_model = settings.EMBEDDING_MODEL.replace("/", "-").lower()
+    # 用实际生效的 embedder 的 model_id，保证与写入 metadata 的标记一致
+    safe_model = get_embedder().model_id.replace("/", "-").lower()
     return f"kb__{safe_model}__v1"

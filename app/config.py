@@ -15,7 +15,11 @@ class Settings(BaseSettings):
     DATA_DIR: Path = BASE_DIR / "data"
 
     # ===== 向量库 =====
+    # backend: "chroma"（本地生产档持久化） / "milvus"（企业档） / "memory"（原型档零依赖）
+    VECTORSTORE_BACKEND: str = "memory"
     CHROMA_PERSIST_DIR: Path = DATA_DIR / "chroma"
+    CHROMA_COLLECTION: str = "knowledge_base"
+    MILVUS_URI: str = "http://localhost:19530"
     COLLECTION_NAME: str = "knowledge_base"
 
     # ===== 档位切换：prototype / local-prod / enterprise =====
@@ -27,8 +31,11 @@ class Settings(BaseSettings):
     PARSER_BACKEND: str = "docling"
 
     # ===== Embedding 配置 =====
-    # backend: "local"（sentence-transformers）或 "api"（OpenAI 兼容接口）
-    EMBEDDING_BACKEND: str = "local"
+    # backend:
+    #   "local"         - sentence-transformers 本地模型（生产档，需 torch）
+    #   "api"           - OpenAI 兼容嵌入接口（需 key）
+    #   "deterministic" - 哈希确定性向量（原型档，零依赖跑通链路，无语义质量）
+    EMBEDDING_BACKEND: str = "deterministic"
     # 本地生产档用 Qwen3-0.6B：MTEB 多语言分数超过 text-embedding-3-large，CPU 可跑
     # 原型档可改 bge-small-zh-v1.5 更快
     EMBEDDING_MODEL: str = "Qwen/Qwen3-Embedding-0.6B"

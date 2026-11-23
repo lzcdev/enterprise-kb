@@ -55,6 +55,7 @@ class Parser(Protocol):
     def parse(self, path: str) -> list[ParsedSection]: ...
 
 
+@runtime_checkable
 class Embedder(Protocol):
     """文本 -> 向量。换模型只需换实现，但要触发数据迁移。"""
     model_id: str
@@ -63,6 +64,7 @@ class Embedder(Protocol):
     def embed(self, texts: list[str], *, is_query: bool = False) -> list[list[float]]: ...
 
 
+@runtime_checkable
 class VectorStore(Protocol):
     """向量存取。namespace 用于隔离不同 embedding 版本的索引。"""
     name: str
