@@ -224,3 +224,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 评测运行产物：每次跑评测都会变，不该产生无意义 diff。
+# 真正要版本化的是 data/eval/baseline.json（质量基线）和 golden.json（标注集）。
+data/eval/last_report.json

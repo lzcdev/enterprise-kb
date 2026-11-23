@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
 
+    # ===== 发布/切流配置 =====
+    # 生产由配置中心（Nacos/Apollo）下发 ACTIVE_NAMESPACE 或写 data/release/state.json；
+    # 显式设置此值优先级最高，可用于紧急人工覆盖。
+    ACTIVE_NAMESPACE: str | None = None
+
     # ===== 检索参数 =====
     TOP_K: int = 10          # 粗召回数量
     TOP_N: int = 3           # 重排后送入 LLM 的数量

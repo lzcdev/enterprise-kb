@@ -13,6 +13,7 @@
 - **[docs/ROLLOUT.md](docs/ROLLOUT.md)** — 生产级改造执行手册：五波次串行步骤、每步验收命令、资源需求总表（哪些要 key/工具）
 - **[docs/DEPLOY_GUIDE.md](docs/DEPLOY_GUIDE.md)** — 部署入门：五种部署方式对比、访问链路、PaaS 与云主机+Docker 两条可照抄的上线路线
 - **[docs/EVAL.md](docs/EVAL.md)** — 评测集与回归门禁：AI 系统怎么验证效果、怎么做到不越改越差（含面试话术）
+- **[docs/RELEASE.md](docs/RELEASE.md)** — CI/CD 与灰度蓝绿：流水线卡点、五步切流、护栏、workflow 配置与诚实边界
 
 ## 核心设计：可平滑升级的三层架构
 
@@ -50,8 +51,11 @@
 # ★ 一键本地验证：7 层全链路（配置/解析/检索/生成/API/评测门禁/测试）
 .venv/bin/python scripts/verify_local.py
 
-# 全量单元测试（62 项）
+# 全量单元测试（75 项）
 .venv/bin/python -m pytest -q
+
+# 蓝绿发布五步演示（影子读/灰度分流/切流/回滚）
+.venv/bin/python scripts/show_release.py
 
 # 效果评测 + 回归门禁（退化超容忍度则 exit 1，CI 可直接用）
 .venv/bin/python scripts/run_eval.py --verbose
@@ -72,7 +76,8 @@
 - **诚实默认**：`config.py` 默认 prototype 档（pymupdf/哈希/内存/mock），名义档位与实际后端一致，开箱可跑；`validate_runtime()` 启动时自检档位一致性与依赖齐全。
 - **部署物料**：`Dockerfile`（API 容器，非 root + 健康检查）+ `deploy/docker-compose.yml`（postgres/redis/chroma/minio/api）+ `deploy/schema.sql`（租户表，PG 首次启动自动建表）。
 - **评测门禁**：`data/eval/golden.json` 12 条标注集 + `app/eval/` 确定性指标与回归门禁。见 [docs/EVAL.md](docs/EVAL.md)。
-- **CI/CD 与灰度蓝绿**：待下一步（评测脚本已按 CI-friendly 设计：退出码 + JSON 输出）。
+- **CI/CD**：`.github/workflows/ci.yml` 四道卡点（编译/测试/全链路验证/评测门禁），PR 合并前自动拦退化。
+- **灰度蓝绿**：`app/release/` 状态机 + `scripts/release_cli.py`，确定性租户分流、步长护栏、原子切流、秒级回滚；CD workflow 手动触发。见 [docs/RELEASE.md](docs/RELEASE.md)。
 
 ## 演示脚本一览
 
@@ -85,7 +90,11 @@
 | `show_retrieval.py` | 粗召回 vs 精排的顺序变化 |
 | `show_rag.py` | 端到端：问题 → 带引用答案 → 溯源 |
 | `show_tenancy.py` | 数据隔离 / 配置覆盖 / 越权拦截 |
-| `migrate_embedding.py` | Embedding 蓝绿迁移骨架 |
+| `show_hybrid.py` | 纯向量 vs BM25+RRF 混合检索 |
+| `show_release.py` | 蓝绿五步：影子读 / 灰度分流 / 切流 / 回滚 |
+| `release_cli.py` | 发布控制命令行（workflow 与手动共用） |
+| `verify_local.py` / `run_eval.py` | 一键验证 / 评测门禁（CI 卡点） |
+| `migrate_embedding.py` | Embedding 蓝绿迁移骨架（历史教学版） |
 
 ## 目录结构
 
@@ -103,12 +112,14 @@ app/
   security/           JWT 鉴权、输入校验（波次0）
   observability/      trace_id 全链路日志（波次0）
   eval/               评测框架 + 回归门禁
+  release/            蓝绿状态机 + 灰度分流 + 回滚（可换配置中心）
   api/                FastAPI 服务（/health /ask /tenants /auth）
-scripts/              演示脚本 + verify_local（一键验证）+ run_eval（评测门禁）
-docs/                 简历 + 面试题库 + 生产改造 + 部署 + 评测
+scripts/              演示脚本 + verify_local / run_eval / release_cli
+docs/                 简历 + 面试 + 生产改造 + 部署 + 评测 + 发布
+.github/workflows/    CI 质量门 + CD 部署与灰度发布
 deploy/               docker-compose + schema.sql
 data/eval/            评测集 golden.json + 基线 baseline.json + 报告
-tests/                10 个测试文件，62 项测试
+tests/                11 个测试文件，75 项测试
 ```
 
 ## 架构亮点（面试可讲）

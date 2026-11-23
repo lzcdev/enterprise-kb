@@ -1,0 +1,55 @@
+name: CI 质量门
+
+# 触发时机：push 到 main 或针对 main 的 PR。
+# 为什么 PR 也要跑？让问题在合并前暴露，而不是合并后才发现主线坏了。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality-gate:
+    name: 测试 + 本地验证 + 评测回归门禁
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: 安装轻量依赖
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-ci.txt
+
+      - name: 语法编译检查
+        run: python -m compileall -q app scripts
+
+      # 轨道一：工程正确性。62 项 pytest 覆盖控制流、鉴权、租户隔离等。
+      - name: 单元测试
+        run: python -m pytest -q
+
+      # 七层链路验证：配置一致性 → 解析 → 检索 → 生成 → API → 评测 → 测试。
+      # 失败返回非 0，自动让 workflow 失败——这就是 CI 的卡点机制。
+      - name: 本地全链路验证
+        run: python scripts/verify_local.py
+
+      # 轨道二：AI 效果质量。与 data/eval/baseline.json 对比，
+      # 退化超过容忍度就返回非 0，阻断合并。绝不自动刷基线。
+      - name: 评测回归门禁
+        run: python scripts/run_eval.py
+
+      # 无论成功失败都上传报告：质量退化时能看到具体哪题、哪个指标掉了。
+      - name: 上传评测报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ github.sha }}
+          path: data/eval/last_report.json
+          if-no-files-found: warn

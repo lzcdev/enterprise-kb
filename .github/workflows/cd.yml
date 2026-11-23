@@ -1,0 +1,107 @@
+name: CD 部署与灰度发布
+
+# 为什么用手动触发（workflow_dispatch）而不是 CI 通过后自动上生产？
+# to B 产品的客户现场环境复杂，通常需要人工卡点确认，这正是"持续交付"与
+# "持续部署"的区别。CI 通过后由负责人在这里选择动作，并观察每一步的结果。
+#
+# 前置配置（仓库 Settings → Secrets and variables → Actions）：
+#   Secrets:   SSH_HOST / SSH_USER / SSH_KEY / GHCR_TOKEN
+#   Variables: APP_DIR（服务器上项目目录，如 /opt/enterprise-kb）
+# 没有这些配置时 workflow 会明确失败——这是预期的：生产部署必须有真实基础设施。
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 要执行的操作
+        required: true
+        type: choice
+        options:
+          - deploy-staging
+          - deploy-production
+          - canary
+          - cutover
+          - rollback
+          - status
+      canary_percent:
+        description: 灰度比例（仅 canary 动作使用，0-100）
+        required: false
+        default: "10"
+        type: string
+
+jobs:
+  build:
+    name: 构建并推送镜像
+    if: inputs.action == 'deploy-staging' || inputs.action == 'deploy-production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+  deploy:
+    name: 部署到目标环境
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 远程拉取镜像并重启服务
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ vars.APP_DIR }}
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            export IMAGE_TAG=${{ github.sha }}
+            docker compose pull api
+            docker compose up -d api
+            sleep 5
+            curl -fsS http://127.0.0.1:8000/health
+            echo "部署完成: ${{ inputs.action }} @ ${{ github.sha }}"
+
+  release:
+    name: 灰度切流与回滚
+    if: inputs.action == 'canary' || inputs.action == 'cutover' || inputs.action == 'rollback' || inputs.action == 'status'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 在服务器上执行发布控制
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ vars.APP_DIR }}
+            case "${{ inputs.action }}" in
+              canary)
+                docker compose exec -T api python scripts/release_cli.py canary --percent "${{ inputs.canary_percent }}"
+                ;;
+              cutover)
+                docker compose exec -T api python scripts/release_cli.py cutover
+                ;;
+              rollback)
+                docker compose exec -T api python scripts/release_cli.py rollback
+                ;;
+              status)
+                docker compose exec -T api python scripts/release_cli.py status
+                ;;
+            esac

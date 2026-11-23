@@ -104,6 +104,24 @@ def active_namespace() -> str:
     configured = getattr(settings, "ACTIVE_NAMESPACE", None)
     if configured:
         return configured
+
+    # 发布控制器状态（模拟配置中心）：切流后新请求立刻走绿，无需重启进程。
+    # 只有 active=green（全量切流）才改变主 namespace；灰度期 active 仍是 blue，
+    # 按比例分流由 ReleaseController.select_namespace() 在请求级完成。
+    # 延迟 import 避免 factory ↔ release 循环依赖；任何异常都静默回退到默认，
+    # 保证配置中心故障时检索服务仍然可用（可用性优先）。
+    try:
+        from app.release.controller import ReleaseController
+
+        state = ReleaseController().status()
+        if state is not None:
+            if state.active == "green" and state.green:
+                return state.green
+            if state.blue:
+                return state.blue
+    except Exception:
+        pass
+
     # 用实际生效的 embedder 的 model_id，保证与写入 metadata 的标记一致
     safe_model = get_embedder().model_id.replace("/", "-").lower()
     return f"kb__{safe_model}__v1"
