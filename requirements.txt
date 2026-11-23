@@ -21,7 +21,7 @@ chromadb==0.5.23         # 原型/本地档；企业档换 Milvus（同一 Vecto
 # Qwen3-Embedding-0.6B：MTEB 多语言 64.33 超过 text-embedding-3-large(58.93)，CPU 可跑
 # 企业档升 Qwen3-4B/8B，用 vLLM / Text-Embeddings-Inference 独立部署
 sentence-transformers==3.4.1
-transformers>=4.51.0     # Qwen3 需要 >=4.51.0，否则 KeyError: 'qwen3'
+transformers>=4.51.0,<5.0.0  # 下界：Qwen3 需要 >=4.51.0（否则 KeyError 'qwen3'）；上界：docling 2.37 要求 <5.0
 
 # ===== LLM SDK =====
 openai==1.59.6           # 兼容 DeepSeek/通义千问的 OpenAI 接口
