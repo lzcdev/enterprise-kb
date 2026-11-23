@@ -1,0 +1,100 @@
+# 单机生产档编排：基础设施 + API 服务（波次1补物料后 API 已纳入编排）
+# 启动：docker-compose -f deploy/docker-compose.yml up -d
+# 说明：postgres 首次启动会自动执行 schema.sql 建表并插入初始租户（挂载 initdb.d）。
+#       API 容器通过 depends_on + healthcheck 等依赖真正就绪后才启动。
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kb-postgres
+    environment:
+      POSTGRES_DB: enterprise_kb
+      POSTGRES_USER: kb_user
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-dev_password_change_me}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # 首次启动自动建表 + 插入初始租户；挂只读，防止容器内误改 SQL
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kb_user -d enterprise_kb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: kb-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    # 生产要加 requirepass，并用 Secret 注入
+    command: redis-server --appendonly yes
+
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: kb-chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - CHROMA_SERVER_AUTHN_PROVIDER=${CHROMA_AUTH_PROVIDER:-}
+      - ANONYMIZED_TELEMETRY=false
+
+  minio:
+    image: minio/minio:latest
+    container_name: kb-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # 管理控制台
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-minioadmin_change_me}
+
+  api:
+    # 用项目根目录的 Dockerfile 构建；context 必须是 .. （deploy/ 的上一级）
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: kb-api
+    ports:
+      - "8000:8000"
+    environment:
+      TIER: ${TIER:-local-prod}
+      PARSER_BACKEND: ${PARSER_BACKEND:-docling}
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-local}
+      VECTORSTORE_BACKEND: ${VECTORSTORE_BACKEND:-chroma}
+      RERANK_BACKEND: ${RERANK_BACKEND:-local}
+      LLM_BACKEND: ${LLM_BACKEND:-api}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+      DEMO_TOKEN_ISSUER: ${DEMO_TOKEN_ISSUER:-false}
+      CHROMA_PERSIST_DIR: /app/data/chroma
+    volumes:
+      - chroma_data:/app/data/chroma     # 向量库持久化到卷，容器重建不丢
+    depends_on:
+      postgres:
+        condition: service_healthy      # 等 PG 真正接受连接，而非"容器已启动"
+      redis:
+        condition: service_started
+    # 生产不要暴露 demo 签发接口；本地教学可设 DEMO_TOKEN_ISSUER=true
+
+volumes:
+  pg_data:
+  redis_data:
+  chroma_data:
+  minio_data:
+
+# 教学说明：
+# 1. 数据卷（volumes）保证容器重启后数据不丢——这就是波次1的"持久化"核心。
+# 2. 密码用 ${VAR:-default} 从环境变量读，默认值仅供本地；生产必须注入真实密钥。
+# 3. healthcheck + depends_on.condition 实现"依赖就绪后才启动"（readiness 探针基础）。
+# 4. api 的默认环境变量是 local-prod 档，需先装重依赖（Dockerfile 的 pip 会装 requirements）。
+#    若本地machine资源有限，可在 .env 里覆盖回 prototype 档再 up。

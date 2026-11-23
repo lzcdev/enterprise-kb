@@ -12,9 +12,10 @@ from typing import Optional
 
 from app.config import settings
 from app.factory import get_llm, get_reranker, get_retriever
-from app.generation.generator import build_prompt, parse_citations
+from app.generation.generator import build_prompt, parse_citations, verify_citations
 from app.interfaces import LLM, Reranker, ScoredChunk
 from app.models import Answer
+from app.observability.tracing import log_event
 from app.retrieval.retriever import Retriever
 from app.tenancy.registry import TenantRegistry, get_registry
 
@@ -64,19 +65,29 @@ class RAGService:
         threshold = score_threshold if score_threshold is not None else cfg.score_threshold
 
         # ① 粗召回（已含阈值过滤）
+        t1 = time.perf_counter()
         candidates = self.retriever.retrieve(
             question, top_k=k, tenant_id=tenant_id,
             score_threshold=threshold,
         )
+        log_event("retrieve", tenant_id=tenant_id,
+                  elapsed_ms=(time.perf_counter() - t1) * 1000,
+                  candidates=len(candidates))
 
         # ② 精排（可关闭：reranker 为 None 时直接用粗召回顺序）
+        t2 = time.perf_counter()
         if self.reranker is not None:
             candidates = self.reranker.rerank(question, candidates, top_n=n)
         else:
             candidates = candidates[:n]
+        log_event("rerank", tenant_id=tenant_id,
+                  elapsed_ms=(time.perf_counter() - t2) * 1000,
+                  candidates=len(candidates))
 
         # 闸门：没有证据就不调 LLM，直接返回 —— 空上下文会逼 LLM 编造
         if not candidates:
+            log_event("empty_short_circuit", tenant_id=tenant_id,
+                      elapsed_ms=(time.perf_counter() - t0) * 1000)
             return Answer(
                 answer="知识库中没有相关信息，无法回答该问题。",
                 sources=[], question=question,
@@ -84,11 +95,20 @@ class RAGService:
             )
 
         # ③ 拼 prompt + ④ 生成
+        t3 = time.perf_counter()
         prompt = build_prompt(question, candidates)
         raw = self.llm.generate(prompt)
+        log_event("generate", tenant_id=tenant_id,
+                  elapsed_ms=(time.perf_counter() - t3) * 1000,
+                  model=self.llm.model_id)
 
-        # ⑤ 引用解析 -> Source 溯源
-        sources = parse_citations(raw, candidates)
+        # ⑤ 引用校验 -> 解析 -> Source 溯源。
+        # verify_citations 把"答案声称引用了但证据里没有"的假引用剔除，
+        # 防止 LLM 幻觉出 [9] 这种不存在的编号（MockLLM 注入测试会验证）。
+        sources = parse_citations(raw, candidates, verify=True)
+        log_event("answer_done", tenant_id=tenant_id,
+                  elapsed_ms=(time.perf_counter() - t0) * 1000,
+                  sources=len(sources))
         return Answer(
             answer=raw, sources=sources, question=question,
             elapsed_ms=(time.perf_counter() - t0) * 1000,

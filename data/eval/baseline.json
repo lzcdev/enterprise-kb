@@ -1,0 +1,21 @@
+{
+  "metrics": {
+    "recall@1": 0.7,
+    "recall@3": 0.9,
+    "recall@5": 0.9,
+    "mrr@10": 0.8142857142857143,
+    "faithfulness": 0.15,
+    "citation_hit_rate": 0.2,
+    "abstention_accuracy": 1.0
+  },
+  "config": {
+    "TIER": "prototype",
+    "EMBEDDING_BACKEND": "deterministic",
+    "VECTORSTORE_BACKEND": "memory",
+    "RERANK_BACKEND": "deterministic",
+    "LLM_BACKEND": "mock",
+    "indexed_chunks": 26
+  },
+  "dataset_version": "1.0",
+  "note": "基线记录：门禁对比的参照物。仅在确认质量变化有意为之时手动刷新。"
+}

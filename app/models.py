@@ -56,10 +56,15 @@ class Source(BaseModel):
 
 
 class Question(BaseModel):
-    """用户提问请求"""
-    question: str
+    """用户提问请求。
+
+    注意 tenant_id 在请求体里只是为了向后兼容 demo 和测试；
+    生产环境 API 层强制从 JWT 解析租户身份，body 里的值会被忽略。
+    这是纵深防御：外部不可信输入的身份绝不能自报。
+    """
+    question: str = Field(min_length=1, max_length=1000, description="用户问题")
     tenant_id: str = "default"
-    top_k: Optional[int] = None
+    top_k: Optional[int] = Field(default=None, ge=1, le=100)
 
 
 class Answer(BaseModel):

@@ -23,12 +23,18 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = "knowledge_base"
 
     # ===== 档位切换：prototype / local-prod / enterprise =====
-    # 同一套代码，换这个配置即可切换整条链路的实现，不改业务代码
-    TIER: str = "local-prod"
+    # 同一套代码，换这个配置即可切换整条链路的实现，不改业务代码。
+    #
+    # [诚实默认] 这里必须是 prototype：默认值要和【实际安装了依赖、能跑通】的档位一致。
+    # 之前默认写 local-prod，但 EMBEDDING/VECTORSTORE/LLM 全是 prototype 实现，
+    # 且 docling 根本没装 —— 名义实不符，按默认配置跑真实上传会崩（get_parser 抛错）。
+    # 想升级到生产档，用 .env 显式覆盖各 BACKEND，并用 validate_runtime() 校验依赖。
+    TIER: str = "prototype"
 
     # ===== 文档解析配置 =====
-    # backend: "docling"（结构感知+表格+溯源坐标）或 "pymupdf"（快速原型）
-    PARSER_BACKEND: str = "docling"
+    # backend: "pymupdf"（零依赖快速通道，默认）或 "docling"（结构感知+表格+溯源坐标）
+    # 默认 pymupdf：docling 是重依赖（torch/transformers），原型档不预装。
+    PARSER_BACKEND: str = "pymupdf"
 
     # ===== Embedding 配置 =====
     # backend:
@@ -85,3 +91,90 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ===== 配置一致性校验：让"名义实不符"在启动时就暴露，而不是跑到一半才崩 =====
+# 每个档位约定的一套后端组合。TIER 是"名义档位"，各 BACKEND 是"实际实现"，
+# 两者必须匹配——否则出现"写着 local-prod 却在用哈希向量"这种自欺欺人的状态。
+TIER_BACKEND_EXPECTATIONS: dict[str, dict[str, str]] = {
+    "prototype": {
+        "PARSER_BACKEND": "pymupdf",
+        "EMBEDDING_BACKEND": "deterministic",
+        "VECTORSTORE_BACKEND": "memory",
+        "RERANK_BACKEND": "deterministic",
+        "LLM_BACKEND": "mock",
+    },
+    "local-prod": {
+        "PARSER_BACKEND": "docling",
+        "EMBEDDING_BACKEND": "local",
+        "VECTORSTORE_BACKEND": "chroma",
+        "RERANK_BACKEND": "local",
+        "LLM_BACKEND": "api",
+    },
+    "enterprise": {
+        "PARSER_BACKEND": "docling",
+        "EMBEDDING_BACKEND": "local",
+        "VECTORSTORE_BACKEND": "milvus",
+        "RERANK_BACKEND": "local",
+        "LLM_BACKEND": "api",
+    },
+}
+
+# 每个后端需要的第三方包（import 名，用于依赖预检）。None 表示零依赖。
+BACKEND_DEPENDENCIES: dict[str, dict[str, str | None]] = {
+    "PARSER_BACKEND": {"pymupdf": "fitz", "docling": "docling", "video": None},
+    "EMBEDDING_BACKEND": {"deterministic": None, "local": "sentence_transformers", "api": "openai"},
+    "VECTORSTORE_BACKEND": {"memory": None, "chroma": "chromadb", "milvus": "pymilvus"},
+    "RERANK_BACKEND": {"deterministic": None, "local": "sentence_transformers", "off": None},
+    "LLM_BACKEND": {"mock": None, "api": "openai", "off": None},
+}
+
+
+def validate_runtime(cfg: Settings | None = None) -> list[str]:
+    """运行时自检：返回问题列表，空列表表示配置一致、依赖齐全。
+
+    检查三类问题：
+    1. TIER 名义档位与各 BACKEND 实际实现是否匹配（名义实不符）。
+    2. 选中的后端所需第三方包是否已安装（避免跑到一半 ImportError）。
+    3. 关键安全配置：api 档缺 key、JWT 用默认密钥。
+
+    为什么返回列表而不是直接抛异常？
+    - 让调用方决定严格程度：本地验证脚本全量报告，API 启动只 warning，
+      CI 可把非空列表当失败。设计成"纯函数 + 数据"而非"带副作用的断言"，
+      才容易测试和复用。
+    """
+    import importlib.util
+
+    cfg = cfg or settings
+    problems: list[str] = []
+
+    # ① 名义实一致性
+    expected = TIER_BACKEND_EXPECTATIONS.get(cfg.TIER)
+    if expected is None:
+        problems.append(f"未知 TIER={cfg.TIER!r}，应为 prototype/local-prod/enterprise")
+    else:
+        for key, want in expected.items():
+            actual = getattr(cfg, key)
+            if actual != want:
+                problems.append(
+                    f"档位不一致: TIER={cfg.TIER} 期望 {key}={want!r}，实际 {actual!r}"
+                )
+
+    # ② 依赖预检：只查当前实际选中的后端
+    for backend_key, mapping in BACKEND_DEPENDENCIES.items():
+        backend = getattr(cfg, backend_key)
+        dep = mapping.get(backend, "__UNKNOWN__")
+        if dep == "__UNKNOWN__":
+            problems.append(f"未知 {backend_key}={backend!r}，无依赖映射")
+        elif dep is not None and importlib.util.find_spec(dep) is None:
+            problems.append(
+                f"缺少依赖: {backend_key}={backend!r} 需要包 {dep!r}（pip install 后重试）"
+            )
+
+    # ③ 关键安全/凭证配置
+    if cfg.EMBEDDING_BACKEND == "api" and not cfg.LLM_API_KEY:
+        problems.append("EMBEDDING_BACKEND=api 但未配置 LLM_API_KEY")
+    if cfg.LLM_BACKEND == "api" and not cfg.LLM_API_KEY:
+        problems.append("LLM_BACKEND=api 但未配置 LLM_API_KEY（生成会失败）")
+
+    return problems

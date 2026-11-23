@@ -8,13 +8,25 @@
 - 原生 pydantic 校验：Question/Answer 模型直接当请求/响应体，类型错了自动 422。
 - 自动生成 OpenAPI/Swagger 文档，前后端联调成本低。
 - 异步友好，适合 LLM 这种慢 IO（本项目先用同步演示，生产可转 async）。
+
+生产化改造（波次 0）：
+- 租户身份从 JWT 解析，不再信请求体里的 tenant_id（堵越权漏洞）。
+- 输入校验：长度 + 疑似注入检测。
+- 每个请求生成 trace_id，全链路日志可串联。
 """
-from fastapi import FastAPI, Request
+import os
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.config import settings
 from app.models import Answer, Question
+from app.observability.tracing import get_trace_id, log_event, new_trace_id
 from app.rag_service import RAGService
+from app.security.auth import TokenError, TokenPayload, issue_token, verify_token
+from app.security.validation import ValidationError, validate_question
 from app.tenancy.registry import (
     QuotaExceededError, SourceTypeNotAllowedError,
     TenantNotFoundError, TenantSuspendedError,
@@ -23,12 +35,27 @@ from app.tenancy.registry import (
 app = FastAPI(
     title="企业知识库问答 API",
     description="多租户 RAG 问答服务：检索 → 重排 → 生成 → 溯源",
-    version="0.1.0",
+    version="0.2.0",
 )
+
+# 鉴权开关：生产必须开；本地教学demo可用 AUTH_ENABLED=false 关掉（不推荐，仅方便 curl）。
+# 默认开启——这正是"安全默认"（secure by default）原则：不配置也是安全的。
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() not in ("false", "0", "no")
+# demo 签发接口：仅本地教学开放，生产必须设 DEMO_TOKEN_ISSUER=false 换成真实登录。
+DEMO_TOKEN_ISSUER = os.getenv("DEMO_TOKEN_ISSUER", "true").lower() not in ("false", "0", "no")
 
 # 服务单例：避免每个请求重建 embedder/store（生产用依赖注入 + 连接池）
 # enforce_tenant=True：外部 HTTP 请求是不可信输入，必须强制校验租户身份
 _service = RAGService(enforce_tenant=True)
+
+
+@app.middleware("http")
+async def trace_middleware(request: Request, call_next):
+    """每个 HTTP 请求生成 trace_id，响应头回传，方便前端报障时提供。"""
+    tid = new_trace_id()
+    response = await call_next(request)
+    response.headers["X-Trace-Id"] = tid
+    return response
 
 
 def bootstrap_demo_index() -> int:
@@ -70,6 +97,55 @@ if settings.VECTORSTORE_BACKEND == "memory":
     bootstrap_demo_index()
 
 
+# ===== 身份依赖：FastAPI 的 Depends 机制，把鉴权逻辑统一在一个地方 =====
+def get_current_tenant(authorization: Optional[str] = Header(None)) -> TokenPayload:
+    """从 Authorization: Bearer <token> 解析租户身份。
+
+    这就是修掉越权漏洞的关键：tenant_id 来自服务端签发的 token，
+    客户端改请求体里的 tenant_id 完全无效。
+    """
+    if not AUTH_ENABLED:
+        # 仅教学 demo：关闭鉴权时默认落入 default 租户，并在日志里标记（避免误用不知情）
+        return TokenPayload(tenant_id="default", exp=0, role="admin")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少 Bearer token",
+                            headers={"WWW-Authenticate": "Bearer"})
+    token = authorization[len("Bearer "):].strip()
+    try:
+        return verify_token(token)
+    except TokenError as exc:
+        raise HTTPException(status_code=401, detail=str(exc),
+                            headers={"WWW-Authenticate": "Bearer"}) from exc
+
+
+def require_admin(identity: TokenPayload = Depends(get_current_tenant)) -> TokenPayload:
+    """管理接口专用：要求 token 的 role=admin。普通 user token 访问返回 403。"""
+    if identity.role != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return identity
+
+
+class TokenRequest(BaseModel):
+    """demo 签发请求。生产换成真实登录（账号密码/SSO/企业微信扫码）。"""
+    tenant_id: str
+    role: str = "user"
+
+
+@app.post("/auth/token")
+def create_demo_token(req: TokenRequest):
+    """教学用的 token 签发接口——仅 DEMO_TOKEN_ISSUER=true 时开放。
+
+    生产必须关掉这个接口，换成真正的登录逻辑：校验凭证后从账号归属关系里
+    取 tenant_id 签发，绝不能让调用方自己指定任意 tenant_id，否则等于没鉴权。
+    """
+    if not DEMO_TOKEN_ISSUER:
+        raise HTTPException(status_code=404, detail="未启用 demo 签发接口")
+    if req.role == "admin" and not DEMO_TOKEN_ISSUER:
+        raise HTTPException(status_code=403, detail="不允许签发管理员 token")
+    token = issue_token(req.tenant_id, role=req.role)
+    return {"access_token": token, "token_type": "bearer", "tenant_id": req.tenant_id}
+
+
 @app.get("/health")
 def health():
     """健康检查：K8s 探针 / 负载均衡探活用。"""
@@ -77,30 +153,36 @@ def health():
 
 
 @app.post("/ask", response_model=Answer)
-def ask(question: Question):
+def ask(question: Question, identity: TokenPayload = Depends(get_current_tenant)):
     """问答主接口：POST /ask。
 
-    请求体用 Question（question/tenant_id/top_k），
-    响应体用 Answer（answer/sources/question/elapsed_ms），pydantic 自动校验。
-    租户身份由 _service(enforce_tenant=True) 强制校验，越权抛出的 TenantError
-    由下方专用 handler 映射成对应 HTTP 状态码。
+    请求体用 Question（question/top_k），响应体用 Answer。
+    租户身份强制来自 JWT（identity.tenant_id），请求体里的 tenant_id 被忽略——
+    这是修复越权漏洞的核心，也是与旧版最大的行为差异。
     """
+    try:
+        q = validate_question(question.question)
+    except ValidationError as exc:
+        log_event("input_rejected", tenant_id=identity.tenant_id, reason=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     answer = _service.answer(
-        question.question,
-        tenant_id=question.tenant_id,
+        q,
+        tenant_id=identity.tenant_id,   # 用 token 里的身份，不信 body
         top_k=question.top_k,
     )
     return answer
 
 
 @app.get("/tenants")
-def list_tenants():
-    """管理接口：列出已注册租户（生产需加管理员鉴权，这里仅演示）。"""
+def list_tenants(identity: TokenPayload = Depends(require_admin)):
+    """管理接口：列出已注册租户（需 admin token）。"""
     return {"tenants": _service.registry.list_tenants()}
 
 
 @app.get("/tenants/{tenant_id}/config")
-def tenant_config(tenant_id: str, source_type: str = "pdf"):
+def tenant_config(tenant_id: str, source_type: str = "pdf",
+                  identity: TokenPayload = Depends(require_admin)):
     """管理接口：查看某租户的最终生效配置与每层来源，排障用。
 
     客户说"我调的参数没生效"时，看 sources 就知道被哪层覆盖了。
@@ -133,6 +215,7 @@ async def quota_exceeded_handler(request: Request, exc: QuotaExceededError):
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     """兜底异常处理：生产应记录日志并返回脱敏信息，别把堆栈暴露给前端。"""
+    log_event("error", trace_id=get_trace_id(), error=str(exc))
     return JSONResponse(
         status_code=500,
         content={"detail": "服务内部错误，请稍后重试", "error": str(exc)},

@@ -45,13 +45,67 @@ def build_prompt(question: str, candidates: list[ScoredChunk]) -> str:
     return PROMPT_TEMPLATE.format(context="\n".join(lines), question=question)
 
 
-def parse_citations(answer: str, candidates: list[ScoredChunk]) -> list[Source]:
+def verify_citations(answer: str, candidates: list[ScoredChunk]) -> tuple[bool, list[int]]:
+    """校验答案里的引用编号：是否合法 + 编号对应的证据是否与答案有实质重叠。
+
+    为什么需要？
+        LLM 可能编造一个不存在的 [9]（越界引用），或者标了 [1] 但答案内容
+        和 [1] 的证据毫无关系（张冠李戴）。to B 场景答案要能点开原文核对，
+        假引用会直接损害可信度。这是防幻觉的又一道闸门。
+
+    实现思路（启发式，非语义）：
+        1. 越界检查：编号必须在 1..len(candidates) 内。
+        2. 重叠检查：去掉停用标点后，答案与被引 chunk 的字符交集比例。
+           用字符级 2-gram 交集，比单词更适合中文（无需分词）。
+        阈值 0.1 是宽松基线：只拦"完全没关系"的假引用，不误伤正常引用。
+        生产应换成 NLI 模型或让 judge LLM 判断，成本更高但更准。
+
+    返回：(是否全部通过, 通过校验的编号列表)
+    """
+    nums = sorted({int(n) for n in re.findall(r"\[(\d+)\]", answer)})
+    if not nums:
+        return True, []  # 没标引用不算错（有些答案不需要引用）
+
+    # 答案正文（去掉引用标记和空白标点），转 2-gram 集合
+    body = re.sub(r"\[\d+\]", "", answer)
+    body_clean = re.sub(r"[\s，。！？、；：\"'（）()《》]", "", body)
+    if len(body_clean) < 2:
+        body_grams = {body_clean}
+    else:
+        body_grams = {body_clean[i:i + 2] for i in range(len(body_clean) - 1)}
+
+    valid: list[int] = []
+    for n in nums:
+        if not (1 <= n <= len(candidates)):
+            continue  # 越界引用：直接丢弃
+        evidence = re.sub(r"[\s，。！？、；：\"'（）()《》]", "", candidates[n - 1].text)
+        if len(evidence) < 2:
+            ev_grams = {evidence}
+        else:
+            ev_grams = {evidence[i:i + 2] for i in range(len(evidence) - 1)}
+        if not body_grams or not ev_grams:
+            continue
+        overlap = len(body_grams & ev_grams) / len(body_grams)
+        if overlap >= 0.1:
+            valid.append(n)
+
+    return len(valid) == len(nums), valid
+
+
+def parse_citations(answer: str, candidates: list[ScoredChunk],
+                    *, verify: bool = False) -> list[Source]:
     """从答案里提取 [n]，映射回 chunk 生成 Source 列表（去重、按引用顺序）。
 
     只返回 LLM 真正引用到的 chunk —— 不是把全部候选都塞给前端，
     这样溯源列表和用户看到的证据一致。
+
+    verify=True 时先用 verify_citations 过滤掉越界/无关引用，只保留可信的。
+    默认 False 保持向后兼容（老测试不受影响），RAGService 里显式开 True。
     """
-    nums = sorted({int(n) for n in re.findall(r"\[(\d+)\]", answer)})
+    if verify:
+        _, nums = verify_citations(answer, candidates)
+    else:
+        nums = sorted({int(n) for n in re.findall(r"\[(\d+)\]", answer)})
     sources: list[Source] = []
     for n in nums:
         if 1 <= n <= len(candidates):

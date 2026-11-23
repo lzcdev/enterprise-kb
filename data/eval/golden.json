@@ -1,0 +1,114 @@
+{
+  "version": "1.0",
+  "description": "企业知识库 RAG 评测集。每题标注：标准答案、应命中的源文件、必须出现的关键事实。用于检索 Recall@k/MRR 与生成忠实度的确定性评测（不依赖 API key）。",
+  "cases": [
+    {
+      "id": "Q01",
+      "question": "七天无理由退款的条件是什么？",
+      "reference_answer": "自签收起七日内，商品保持完好可申请无理由退款；定制、生鲜等例外商品不支持。",
+      "relevant_source": "退款售后政策.pdf",
+      "key_facts": ["七日", "完好", "定制", "生鲜"],
+      "should_answer": true,
+      "category": "单文档定位"
+    },
+    {
+      "id": "Q02",
+      "question": "商品有质量问题多久内可以换货？",
+      "reference_answer": "签收后 15 日内可申请换货，换货运费由卖家承担。",
+      "relevant_source": "退款售后政策.pdf",
+      "key_facts": ["15 日", "换货"],
+      "should_answer": true,
+      "category": "单文档定位"
+    },
+    {
+      "id": "Q03",
+      "question": "忘记密码如何重置？",
+      "reference_answer": "登录页点击忘记密码，输入注册手机号收验证码后重置，验证码 5 分钟内有效。",
+      "relevant_source": "客服FAQ.md",
+      "key_facts": ["忘记密码", "验证码", "5 分钟"],
+      "should_answer": true,
+      "category": "FAQ 匹配"
+    },
+    {
+      "id": "Q04",
+      "question": "Pro 版每月有多少次 AI 问答额度？",
+      "reference_answer": "Pro 版每月 50000 次 AI 问答。",
+      "relevant_source": "产品规格.md",
+      "key_facts": ["50000", "Pro"],
+      "should_answer": true,
+      "category": "表格定位"
+    },
+    {
+      "id": "Q05",
+      "question": "旗舰版价格是多少？",
+      "reference_answer": "旗舰版 4999 元/月。",
+      "relevant_source": "产品规格.md",
+      "key_facts": ["4999"],
+      "should_answer": true,
+      "category": "表格定位"
+    },
+    {
+      "id": "Q06",
+      "question": "公司客服热线是多少？",
+      "reference_answer": "客服热线 400-888-6666，工作日 9:00-18:00。",
+      "relevant_source": "公司介绍.txt",
+      "key_facts": ["400-888-6666"],
+      "should_answer": true,
+      "category": "无结构文本"
+    },
+    {
+      "id": "Q07",
+      "question": "事假 3 天以上由谁审批？",
+      "reference_answer": "事假 3 天以上需部门负责人审批，3 天以内由直属主管审批。",
+      "relevant_source": "员工手册.docx",
+      "key_facts": ["3 天以上", "部门负责人"],
+      "should_answer": true,
+      "category": "DOCX 定位"
+    },
+    {
+      "id": "Q08",
+      "question": "预售商品什么时候发货？",
+      "reference_answer": "预售商品以商品页面标注的发货时间为准。",
+      "relevant_source": "客服FAQ.md",
+      "key_facts": ["预售", "发货时间"],
+      "should_answer": true,
+      "category": "FAQ 匹配"
+    },
+    {
+      "id": "Q09",
+      "question": "Pro 版的 SLA 可用性承诺是多少？",
+      "reference_answer": "Pro 版及以上提供 99.9% 可用性 SLA。",
+      "relevant_source": "产品规格.md",
+      "key_facts": ["99.9%", "Pro"],
+      "should_answer": true,
+      "category": "单文档定位"
+    },
+    {
+      "id": "Q10",
+      "question": "工作满 5 年有多少天年休假？",
+      "reference_answer": "每年 15 天带薪年假，工作满 5 年增加到 20 天。",
+      "relevant_source": "员工手册.docx",
+      "key_facts": ["5 年", "20 天"],
+      "should_answer": true,
+      "category": "DOCX 定位"
+    },
+    {
+      "id": "Q11",
+      "question": "公司团建去哪里玩？",
+      "reference_answer": "知识库中无相关信息，不应编造答案。",
+      "relevant_source": null,
+      "key_facts": [],
+      "should_answer": false,
+      "category": "拒答（无据）"
+    },
+    {
+      "id": "Q12",
+      "question": "如何申请出国留学奖学金？",
+      "reference_answer": "知识库中无相关信息，不应编造答案。",
+      "relevant_source": null,
+      "key_facts": [],
+      "should_answer": false,
+      "category": "拒答（无据）"
+    }
+  ]
+}

@@ -83,23 +83,49 @@ def test_resolve_config_safe_degrades():
 
 
 def test_api_enforces_tenant_identity():
-    """API 身份闸门：未注册 404，已注册 200。"""
+    """API 身份闸门：未注册 404，已注册 200，身份从 JWT 取不信 body。
+
+    波次0改造后：租户身份来自 token，请求体里的 tenant_id 被忽略。
+    这里用 demo 签发接口拿 token，验证三种情况：
+    1. 未注册租户的 token → 404
+    2. 合法租户 token → 200
+    3. body 里伪造 tenant_id → 仍按 token 的租户查（越权修复的证据）
+    """
     from fastapi.testclient import TestClient
     from app.api.main import app
     client = TestClient(app)
-    r = client.post("/ask", json={"question": "七天无理由退款", "tenant_id": "never_registered"})
+
+    def token_for(tid):
+        return client.post("/auth/token", json={"tenant_id": tid}).json()["access_token"]
+
+    # 1. 未注册租户
+    r = client.post("/ask", json={"question": "七天无理由退款"},
+                    headers={"Authorization": f"Bearer {token_for('never_registered')}"})
     assert r.status_code == 404
     assert r.json()["code"] == "TENANT_NOT_FOUND"
-    r = client.post("/ask", json={"question": "七天无理由退款", "tenant_id": "default"})
+
+    # 2. 合法租户
+    r = client.post("/ask", json={"question": "七天无理由退款"},
+                    headers={"Authorization": f"Bearer {token_for('default')}"})
     assert r.status_code == 200
     assert "answer" in r.json()
 
 
 def test_api_config_endpoint_shows_sources():
-    """管理接口：配置查询带来源标记。"""
+    """管理接口：配置查询带来源标记，需 admin token。"""
     from fastapi.testclient import TestClient
     from app.api.main import app
     client = TestClient(app)
-    data = client.get("/tenants/law_firm/config", params={"source_type": "pdf"}).json()
+    admin_token = client.post("/auth/token",
+                              json={"tenant_id": "default", "role": "admin"}).json()["access_token"]
+    # 普通 user token 访问管理接口应 403
+    user_token = client.post("/auth/token", json={"tenant_id": "default"}).json()["access_token"]
+    assert client.get("/tenants/law_firm/config", params={"source_type": "pdf"},
+                      headers={"Authorization": f"Bearer {user_token}"}).status_code == 403
+
+    r = client.get("/tenants/law_firm/config", params={"source_type": "pdf"},
+                   headers={"Authorization": f"Bearer {admin_token}"})
+    assert r.status_code == 200
+    data = r.json()
     assert data["chunk_size"] == 400
     assert data["sources"]["chunk_size"] == "type"
