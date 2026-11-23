@@ -17,11 +17,44 @@
 - 覆盖链返回"来源标记"：每个生效参数来自哪一层，可视化/排障时能一眼看清。
 """
 from dataclasses import dataclass, field
-from typing import Optional, Literal
+from typing import Optional, Literal, Protocol, runtime_checkable
 
 from app.config import settings
 
 SourceType = Literal["pdf", "docx", "md", "txt", "video", "audio"]
+
+
+# ===== 存储后端协议：注册表逻辑与存储介质解耦的关键 =====
+# 为什么要抽象出这一层？
+#   TenantRegistry 的身份校验、四层覆盖链是【业务逻辑】，不该关心数据存在内存还是数据库。
+#   定义这个 Protocol 后，内存 dict 和 PostgreSQL 都只是"实现"，
+#   换存储只改工厂里的一行实例化，业务代码（API/RAGService）零改动。
+#   这就是 interfaces.py 那套可拔插思想在租户层的复用。
+@runtime_checkable
+class TenantStore(Protocol):
+    """租户配置的存取契约。任何实现只需提供这三个方法。"""
+
+    def get(self, tenant_id: str) -> Optional["TenantConfig"]: ...
+    def upsert(self, config: "TenantConfig") -> None: ...
+    def list_all(self) -> list["TenantConfig"]: ...
+
+
+class InMemoryTenantStore:
+    """默认存储：进程内 dict。零依赖，适合原型档与单元测试。"""
+
+    def __init__(self, tenants: Optional[list["TenantConfig"]] = None):
+        self._data: dict[str, TenantConfig] = {}
+        for t in tenants or []:
+            self.upsert(t)
+
+    def get(self, tenant_id: str) -> Optional["TenantConfig"]:
+        return self._data.get(tenant_id)
+
+    def upsert(self, config: "TenantConfig") -> None:
+        self._data[config.tenant_id] = config
+
+    def list_all(self) -> list["TenantConfig"]:
+        return list(self._data.values())
 
 
 # ===== 异常类型：区分不同的拒绝原因，API 层据此返回不同状态码 =====
@@ -112,22 +145,29 @@ class TenantRegistry:
         "score_threshold": settings.SCORE_THRESHOLD,
     }
 
-    def __init__(self, tenants: Optional[list[TenantConfig]] = None):
-        self._tenants: dict[str, TenantConfig] = {}
+    def __init__(self, tenants: Optional[list[TenantConfig]] = None,
+                 store: Optional[TenantStore] = None):
+        # 依赖注入：默认用内存 store，生产由工厂注入 PG store。
+        # 业务逻辑（下面所有方法）只跟 store 接口打交道，不知道背后是 dict 还是数据库。
+        self._store: TenantStore = store if store is not None else InMemoryTenantStore()
         for t in tenants or []:
             self.register(t)
 
     def register(self, tenant: TenantConfig) -> None:
-        """注册/更新租户。生产环境这里应写库并做唯一性校验。"""
-        self._tenants[tenant.tenant_id] = tenant
+        """注册/更新租户。写操作委托给存储后端（内存版写 dict，PG 版 UPSERT）。"""
+        self._store.upsert(tenant)
 
     def get(self, tenant_id: str) -> Optional[TenantConfig]:
         """查询租户，不存在返回 None（不抛异常，供非强制场景用）。"""
-        return self._tenants.get(tenant_id)
+        return self._store.get(tenant_id)
 
     def list_tenants(self) -> list[str]:
         """列出所有租户 id，管理接口用。"""
-        return list(self._tenants.keys())
+        return [t.tenant_id for t in self._store.list_all()]
+
+    def list_all_tenants(self) -> list["TenantConfig"]:
+        """列出完整租户配置（播种空库时用）。"""
+        return self._store.list_all()
 
     def require_active(self, tenant_id: str) -> TenantConfig:
         """身份校验：必须已注册且状态为 active，否则抛异常。
@@ -231,15 +271,42 @@ def default_registry() -> TenantRegistry:
     ])
 
 
-# 模块级单例：全进程共享同一份注册表（生产换成带缓存的 DB 实现）
+# 模块级单例：全进程共享同一份注册表。
+# 生产档通过 TENANT_STORE_BACKEND=pg 把数据源换成 PostgreSQL。
 _registry: Optional[TenantRegistry] = None
+
+
+def build_registry() -> TenantRegistry:
+    """按配置装配注册表——这是"存储可拔插"的唯一决策点。
+
+    - memory（默认）：内存 store + 预置 demo 租户，零依赖，测试/原型档用。
+    - pg：PostgreSQL store；此时租户数据来自数据库，不再用 default_registry 的预置值。
+      数据库为空时（首次启动）才用预置租户初始化，保证开箱即用。
+
+    延迟 import PGTenantStore：psycopg2 是可选依赖，prototype 档不装也能 import registry。
+    """
+    backend = getattr(settings, "TENANT_STORE_BACKEND", "memory").lower()
+    if backend == "memory":
+        return default_registry()
+    if backend == "pg":
+        from app.tenancy.store_pg import PGTenantStore
+
+        store = PGTenantStore(dsn=settings.PG_DSN)
+        store.init_schema()
+        registry = TenantRegistry(store=store)
+        # 空库播种：把 demo 租户写进去，避免首次启动时没有任何租户可用。
+        if not store.list_all():
+            for t in default_registry().list_all_tenants():
+                store.upsert(t)
+        return registry
+    raise ValueError(f"未知的 TENANT_STORE_BACKEND: {backend!r}（应为 memory / pg）")
 
 
 def get_registry() -> TenantRegistry:
     """获取全局注册表单例。测试可用 _reset_registry() 重置。"""
     global _registry
     if _registry is None:
-        _registry = default_registry()
+        _registry = build_registry()
     return _registry
 
 

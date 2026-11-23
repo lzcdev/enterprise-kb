@@ -81,6 +81,28 @@
 
 - 上传的原始文件放 MinIO，向量库 metadata 只存 `object_key`，不再依赖本地路径。
 - **验收**：删掉本地 `data/测试产品手册.md`，服务仍能溯源到原文（从 MinIO 取）。
+- **状态：未做**。本地 Docker 拉镜像被代理阻断（colima 内无法访问宿主机代理），
+  且本机没有 MinIO 服务；不假装完成。
+
+### 1.5 本波次实际完成与验收记录
+
+| 子项 | 状态 | 验收命令 | 实测结果 |
+|---|---|---|---|
+| 注册表存储抽象 | ✅ | `pytest -q` | 75 passed + 5 skipped（默认内存档不变） |
+| 租户配置落 PG | ✅ | `verify_pg_persistence.py` | 双进程模拟重启，配置与覆盖链都在 |
+| 空库播种 | ✅ | 独立空库 + `TENANT_STORE_BACKEND=pg` | default/law_firm/startup 自动写入 |
+| PG 集成测试 | ✅ | `KB_PG_TEST=1 pytest tests/test_tenancy_pg.py` | 5 passed |
+| 向量落 Chroma | ✅ | `verify_chroma_persistence.py` | 双进程重启前后 top3 id 完全一致 |
+| 原文存 MinIO | ❌ | — | 无 MinIO 服务，未做 |
+
+**环境说明**：Docker daemon（colima）在虚拟机内，无法用宿主机的 HTTP 代理拉镜像；
+改用本机已装的 PostgreSQL 18（brew）验证持久化，连接串 `postgresql://lzc@127.0.0.1:5432/enterprise_kb_test`。
+这不影响代码正确性——`PGTenantStore` 只认 DSN，不关心 PG 跑在容器还是本机。
+
+**踩坑记录**（都已写进测试）：
+1. psycopg2 对 JSONB 列自动反序列化：读回已是 dict/list，再 `json.loads()` 会 TypeError。
+2. Python list 传给 JSONB 列会被适配成 PG `text[]`，报类型不匹配；必须用 `psycopg2.extras.Json` 包装。
+3. store 连接不关，测试删库报 `database is being accessed by other users`；补 `close()`。
 
 ### 资源需求
 - Python 包：`psycopg2-binary`、`chromadb`、`minio`（都是轻/中量，无需 GPU）
@@ -117,6 +139,42 @@
 - Python 包：`torch`、`transformers`、`accelerate`（约 1-2GB）
 - 模型权重：Qwen3-Embedding-0.6B + Qwen3-Reranker-0.6B（约 2.4GB，**无需 token**）
 - **不需要任何 API key**
+
+### ✅ 实际完成状态（2026-11-24）
+
+**已完成**：
+- 2.1 推理依赖已装：`torch 2.15.0` / `transformers 4.57.6` / `sentence-transformers 5.7.0`
+  （arm64 wheel，走阿里云 pip 镜像）。
+- 2.2 Qwen3-Embedding-0.6B 已接入并真跑通：模型经 `hf-mirror.com` 下载（HF 直连 502），
+  编码输出 1024 维、`model_id=qwen-qwen3-embedding-0.6b`，与 namespace 标记同源。
+- 2.4 蓝绿迁移做成了可执行脚本 `scripts/migrate_qwen3.py`，完整五步（建绿→双写→影子读→
+  灰度放量→切流→回滚）全部真跑，控制流与真模型质量对比都验证通过。
+- **关键工程修复：模型-索引联动**。原 `show_release.py` 用同一 embedder 查蓝绿两套索引，
+  这在真模型场景是错的（哈希 query 向量查语义索引 = 噪音）。新增
+  `factory.embedder_for_namespace()` 从 namespace 编码的 model_id 反推对应 embedder，
+  `Retriever(bind_embedder_to_namespace=True)` 自动绑定。15 项测试固化此约束。
+
+**2.3 Qwen3-Reranker-0.6B 已接入（修了一个真 bug）**：
+原 `LocalReranker` 用 `AutoModelForSequenceClassification` 加载，但 Qwen3-Reranker 的
+架构是 `Qwen3ForCausalLM`（生成式，无分类头）——那样加载会随机初始化分类头，打分全是噪音。
+改用 `sentence_transformers.CrossEncoder`（内置 Qwen3-Reranker 专用 chat template +
+yes token logit 取值）。实测相关文档 7.17 分 / 无关 -10.36 分。
+
+**真实验收数据**（`data/eval/model_migration_report.json`）：
+
+| 维度 | 蓝 / 对照 | 绿 / Qwen3 | 差异 |
+|---|---|---|---|
+| Embedding top1 命中率（4 条字面不重合 query） | Deterministic 0.500 | **0.750** | **+0.250** |
+| Reranker 纠正误召回（口语化 query "买的东西不想要了能退吗"） | 确定性重排全 0 分，top1 仍是无关的价格文档 | **Qwen3 把退款文档提到 top1（4.22 分）** | 从错排到正确 |
+
+> 诚实边界：4 题小样本教学演示，非严格 benchmark（样本小、query 是设计的）。
+> 证明的是"语义模型 vs 哈希在字面不重合时的质量差距真实存在"，不能当 SOTA 分数引用。
+
+**未完成 / 降级项（诚实标注）**：
+- 全量评测仍跑 prototype 档（哈希），门禁基线未刷新——换模型的收益用独立迁移报告体现，
+  不动主评测基线，避免把"教学对比"混进回归门禁。
+- batch encode 优化未做：当前仍逐条 embed，Qwen3 在 CPU 上 8 条约数秒；生产应改 batch 32。
+- 未接 vLLM / TEI 独立推理服务（企业档），当前是进程内加载，适合本地生产档。
 
 ---
 

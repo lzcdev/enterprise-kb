@@ -6,7 +6,8 @@
   只在真正用到那一档时才装/加载，本地开发原型档不会被企业档依赖拖慢。
 - 换档位 = 改一个环境变量 TIER，业务代码零改动 —— 这就是"平滑升级"的控制开关。
 """
-from typing import Optional
+from typing import Optional, Callable
+from functools import lru_cache
 
 from app.config import settings
 from app.interfaces import Parser, Embedder, VectorStore, Reranker, LLM
@@ -125,3 +126,77 @@ def active_namespace() -> str:
     # 用实际生效的 embedder 的 model_id，保证与写入 metadata 的标记一致
     safe_model = get_embedder().model_id.replace("/", "-").lower()
     return f"kb__{safe_model}__v1"
+
+
+def embedder_for_namespace(namespace: str) -> Embedder:
+    """按 namespace 编码的模型版本，返回与之匹配的 embedder。
+
+    这是蓝绿/灰度迁移里最容易被忽略、也最致命的一环：
+    蓝索引用模型 A 的向量、绿索引用模型 B 的向量，查询时必须用【建该索引的同一个
+    模型】生成 query 向量，余弦相似度才有意义。若切了 namespace 却仍用全局默认
+    embedder（往往是 A），查绿索引就是拿 A 的 query 向量比 B 的文档向量，结果全是噪音。
+
+    namespace 约定格式：kb__{model_id}__v{n}
+      - kb__deterministic-hash-v1__v1 → DeterministicEmbedder
+      - kb__qwen-qwen3-embedding-0.6b__v1 → LocalEmbedder(Qwen3)
+
+    解析失败时回退到全局 get_embedder()，保证未知 namespace 不会让服务崩溃
+    （可用性优先；生产应告警）。用 lru_cache 是因为 LocalEmbedder 加载模型很贵，
+    同一 namespace 的查询必须复用同一实例，不能每次查都重新加载 600M 参数。
+    """
+    from app.retrieval.embedding_local import DeterministicEmbedder, LocalEmbedder
+
+    model_id = parse_model_id(namespace)
+    if model_id is None:
+        return get_embedder()
+
+    if model_id.startswith("deterministic"):
+        return _cached_deterministic()
+    # 其余（qwen3 / bge / 任何本地模型名）都走 LocalEmbedder
+    model_name = _model_id_to_name(model_id)
+    return _cached_local(model_name)
+
+
+def parse_model_id(namespace: str) -> Optional[str]:
+    """从 namespace 里取出 model_id 段：kb__{model_id}__v{n} -> model_id。
+
+    要求严格三段格式（kb / model_id / v版本号），缺版本段的宽松格式一律返回 None，
+    避免把 hybrid demo 的 `kb__x__v1__hybrid_demo` 之类或残缺名误判成模型版本。
+    """
+    parts = namespace.split("__")
+    if len(parts) == 3 and parts[0] == "kb" and parts[2].startswith("v"):
+        return parts[1]
+    return None
+
+
+def _model_id_to_name(model_id: str) -> str:
+    """model_id（qwen-qwen3-embedding-0.6b）反推 HF 模型名（Qwen/Qwen3-Embedding-0.6B）。
+
+    优先用配置里的 EMBEDDING_MODEL（它就是本地档的真实模型名）；仅当配置的模型
+    与 namespace 标记不一致时（说明在查另一个版本的索引），才按约定反推。
+    """
+    configured = settings.EMBEDDING_MODEL
+    if configured.replace("/", "-").lower() == model_id:
+        return configured
+    # 反推：qwen-qwen3-embedding-0.6b -> Qwen/Qwen3-Embedding-0.6B 无法百分百还原大小写，
+    # 但 HuggingFace 模型 ID 大小写不敏感，用小写 + 首个连字符转斜杠即可命中。
+    if "-" in model_id:
+        org, rest = model_id.split("-", 1)
+        return f"{org}/{rest}"
+    return model_id
+
+
+@lru_cache(maxsize=4)
+def _cached_deterministic() -> Embedder:
+    from app.retrieval.embedding_local import DeterministicEmbedder
+    return DeterministicEmbedder(dimension=settings.EMBEDDING_DIM)
+
+
+@lru_cache(maxsize=4)
+def _cached_local(model_name: str) -> Embedder:
+    from app.retrieval.embedding_local import LocalEmbedder
+    return LocalEmbedder(
+        model_name=model_name,
+        dimension=settings.EMBEDDING_DIM,
+        query_instruction=settings.EMBEDDING_QUERY_INSTRUCTION,
+    )
