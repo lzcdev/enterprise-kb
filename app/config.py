@@ -45,6 +45,18 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
     LLM_MODEL: str = "deepseek-chat"
 
+    # ===== 视频处理配置（多模态扩展位）=====
+    # 这些参数演示分层配置的思想：视频有自己的"切分参数"（按时间切），
+    # 就像文档有 chunk_size（按字符切）。后面可做租户级/类型级覆盖。
+    VIDEO_FRAME_FPS: float = 1.0          # 抽帧频率：每秒 1 帧为基线
+    VIDEO_SEGMENT_SECONDS: int = 30       # 固定窗口策略的时间窗口（兜底基线）
+    VIDEO_CAPTION_ENABLED: bool = False   # 是否用 VLM 给帧生成描述（贵，默认关）
+    # 切分策略：fixed=固定窗口 / scene=场景边界优先+时长约束（可拔插，见 video_segmenter.py）
+    VIDEO_SEGMENT_STRATEGY: str = "fixed"
+    # 场景策略的时长约束：短于 min 合并（防碎片），长于 max 强切（防巨型块）
+    VIDEO_MIN_SEGMENT_MS: int = 10000     # 10 秒
+    VIDEO_MAX_SEGMENT_MS: int = 60000     # 60 秒
+
     # ===== 切分参数 =====
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50

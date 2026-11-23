@@ -97,6 +97,11 @@ def section_to_chunks(section: ParsedSection, splitter: RecursiveSplitter | None
                 source_type=section.source_type,  # type: ignore[arg-type]
                 page=section.page,
                 title_path=section.title_path,
+                # 音视频时间戳透传：视频 section 的 metadata 里带 start_ms/end_ms，
+                # 这里把它们带进 DocumentMeta，最终随 Source 返回给前端做跳转播放。
+                # 文档 section 没有这两个字段，就是 None，完全兼容。
+                start_ms=section.metadata.get("start_ms"),
+                end_ms=section.metadata.get("end_ms"),
             ),
         ))
     return chunks

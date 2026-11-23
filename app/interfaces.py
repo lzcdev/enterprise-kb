@@ -10,7 +10,7 @@
 
 任何业务代码只 import 这里的接口，绝不 import 具体实现。
 """
-from typing import Protocol, Any, Optional
+from typing import Protocol, Any, Optional, runtime_checkable
 from dataclasses import dataclass, field
 
 
@@ -42,8 +42,14 @@ class ScoredChunk:
     metadata: dict
 
 
+@runtime_checkable
 class Parser(Protocol):
-    """文档解析：文件 -> 带结构信息的文本段。proto/docling/serve 三档实现。"""
+    """文档解析：文件 -> 带结构信息的文本段。proto/docling/serve 三档实现。
+
+    @runtime_checkable：让 isinstance(obj, Parser) 可用。
+    注意 Python 的 Protocol 默认不能在运行时做 isinstance 检查（会抛 TypeError），
+    加了这个装饰器才可以。局限：它只检查方法/属性名是否存在，不校验签名和类型。
+    """
     name: str
 
     def parse(self, path: str) -> list[ParsedSection]: ...

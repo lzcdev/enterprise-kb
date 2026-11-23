@@ -18,9 +18,15 @@ class DocumentMeta(BaseModel):
     doc_id: str = Field(default_factory=gen_id)
     tenant_id: str = "default"          # 阶段 1 先用默认值，阶段 3 做真正隔离
     filename: str
-    source_type: Literal["pdf", "docx", "md", "txt"]
+    # 扩展视频/音频：接入多模态时 Literal 必须同步扩展，否则 pydantic 校验直接拒绝 "video"。
+    # 这就是"契约层要跟着演进"——只加 loader 不改契约，视频数据根本存不进来。
+    source_type: Literal["pdf", "docx", "md", "txt", "video", "audio"]
     page: Optional[int] = None          # PDF 页码
     title_path: str = ""                # 标题层级，如 "产品手册 > 退款政策"
+    # 音视频溯源：文档用 page（第几页），音视频用 start_ms/end_ms（第几毫秒）。
+    # 两者可共存：一个 chunk 要么来自文档页码，要么来自音视频时间段。
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
 
 
 class Chunk(BaseModel):
@@ -44,6 +50,9 @@ class Source(BaseModel):
     title_path: str = ""
     text: str                    # 被引用的原文片段
     score: float = 0.0           # 相关度分数
+    # 音视频溯源：前端拿到 start_ms 可生成"跳转到 01:23"的播放链接
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
 
 
 class Question(BaseModel):

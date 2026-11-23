@@ -20,6 +20,9 @@ def get_parser() -> Parser:
     if backend == "docling":
         from app.ingestion.loader_docling import DoclingParser
         return DoclingParser()
+    if backend == "video":
+        from app.ingestion.loader_video import VideoParser
+        return VideoParser()
     raise ValueError(f"未知的 PARSER_BACKEND: {backend}")
 
 
