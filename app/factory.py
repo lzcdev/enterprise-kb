@@ -65,10 +65,17 @@ def get_vectorstore() -> VectorStore:
 
 
 def get_reranker() -> Optional[Reranker]:
+    """按配置造重排器；RERANK_ENABLED=false 时直接关闭整层。"""
     if not settings.RERANK_ENABLED:
         return None
-    from app.retrieval.reranker_local import LocalReranker
-    return LocalReranker(model_name=settings.RERANK_MODEL)
+    from app.retrieval.reranker_local import get_reranker as _build
+    return _build(backend=settings.RERANK_BACKEND, model_name=settings.RERANK_MODEL)
+
+
+def get_retriever():
+    """检索器：组装 embedder + vectorstore + namespace，供 API 层直接调用。"""
+    from app.retrieval.retriever import Retriever
+    return Retriever()
 
 
 def get_llm() -> LLM:

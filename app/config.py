@@ -45,6 +45,8 @@ class Settings(BaseSettings):
 
     # ===== Rerank 配置（企业档/本地生产档启用）=====
     RERANK_ENABLED: bool = True
+    # backend: "deterministic"(零依赖验证链路) / "local"(Qwen3交叉编码器,需torch) / "off"(关闭)
+    RERANK_BACKEND: str = "deterministic"
     RERANK_MODEL: str = "Qwen/Qwen3-Reranker-0.6B"
 
     # ===== LLM 配置 =====

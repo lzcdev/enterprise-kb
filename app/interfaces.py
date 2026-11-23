@@ -83,6 +83,7 @@ class VectorStore(Protocol):
     def list_namespaces(self) -> list[str]: ...
 
 
+@runtime_checkable
 class Reranker(Protocol):
     """精排：(query, 候选) -> 排序后的候选。可关闭/换模型。"""
     model_id: str
@@ -90,6 +91,7 @@ class Reranker(Protocol):
     def rerank(self, query: str, candidates: list[ScoredChunk], top_n: int) -> list[ScoredChunk]: ...
 
 
+@runtime_checkable
 class LLM(Protocol):
     """生成：prompt -> 答案。最易替换的一层。"""
     model_id: str
