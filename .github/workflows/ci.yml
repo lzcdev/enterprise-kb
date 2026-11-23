@@ -10,7 +10,10 @@ on:
 
 jobs:
   quality-gate:
-    name: 测试 + 本地验证 + 评测回归门禁
+    # 注意：不要在这里写 name: 字段。
+    # GitHub 上 check run 的名字取 job 的 name（若有），否则取 job id。
+    # 分支保护 ruleset 要求的 context 是 "quality-gate"（即 job id），
+    # 一旦这里加了中文 name，check 名会变成中文，ruleset 永远匹配不上 → PR 被卡死。
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
