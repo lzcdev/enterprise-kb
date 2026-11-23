@@ -79,15 +79,33 @@ class PGTenantStore:
         """
         conn = self._load()
         with conn.cursor() as cur:
+            # JSONB 写入必须用 psycopg2.extras.Json 显式包装，原因有两个：
+            #   1. list 会被 psycopg2 默认适配成 PG 的 text[] 数组，与 jsonb 列类型不匹配
+            #      （实测报错：column is of type jsonb but expression is of type text[]）。
+            #   2. Json() 会正确序列化嵌套 dict/list，并保证读回是 JSONB 对象而非转义字符串。
+            # None 保持 SQL NULL：allowed_source_types=NULL 表示"不限制类型"。
+            from psycopg2.extras import Json
+
+            def j(value):
+                return Json(value) if value is not None else None
+
             cur.execute(sql, (
                 cfg.tenant_id, cfg.name, cfg.status,
-                json.dumps(cfg.allowed_source_types) if cfg.allowed_source_types else None,
+                j(cfg.allowed_source_types),
                 cfg.max_documents,
-                json.dumps(cfg.overrides, ensure_ascii=False),
-                json.dumps(cfg.type_overrides, ensure_ascii=False),
-                json.dumps(cfg.doc_overrides, ensure_ascii=False),
+                j(cfg.overrides), j(cfg.type_overrides), j(cfg.doc_overrides),
             ))
         conn.commit()
+
+    def close(self) -> None:
+        """关闭数据库连接。
+
+        为什么要有显式 close？进程退出时 OS 会回收连接，但测试里要删库、
+        应用里要优雅停机——连接不关会导致 "database is being accessed by other users"。
+        """
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def get(self, tenant_id: str) -> Optional[TenantConfig]:
         """按 id 取租户配置。"""
@@ -107,6 +125,21 @@ class PGTenantStore:
         return [self._row_to_config(r) for r in rows]
 
     @staticmethod
+    def _as_object(value):
+        """JSONB 字段归一化为 Python 对象。
+
+        关键坑：psycopg2 对 JSONB 列会【自动反序列化】——
+        upsert 时写入 json.dumps({"a": 1})，读回来已经是 dict 而非字符串。
+        所以不能再 json.loads(dict)，否则 TypeError。
+        但有些驱动/连接配置下读回的是字符串，两种都要兼容。
+        """
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        return json.loads(value)
+
+    @staticmethod
     def _row_to_config(row) -> TenantConfig:
         """DB 行 → TenantConfig。列顺序必须与 SELECT * 的表定义一致。"""
         (tenant_id, name, status, allowed_types, max_docs,
@@ -115,9 +148,9 @@ class PGTenantStore:
             tenant_id=tenant_id,
             name=name,
             status=status,
-            allowed_source_types=json.loads(allowed_types) if allowed_types else None,
+            allowed_source_types=PGTenantStore._as_object(allowed_types),
             max_documents=max_docs,
-            overrides=overrides if isinstance(overrides, dict) else json.loads(overrides),
-            type_overrides=type_overrides if isinstance(type_overrides, dict) else json.loads(type_overrides),
-            doc_overrides=doc_overrides if isinstance(doc_overrides, dict) else json.loads(doc_overrides),
+            overrides=PGTenantStore._as_object(overrides) or {},
+            type_overrides=PGTenantStore._as_object(type_overrides) or {},
+            doc_overrides=PGTenantStore._as_object(doc_overrides) or {},
         )

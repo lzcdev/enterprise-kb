@@ -25,9 +25,20 @@ class Retriever:
         embedder: Optional[Embedder] = None,
         store: Optional[VectorStore] = None,
         namespace: Optional[str] = None,
+        *,
+        bind_embedder_to_namespace: bool = False,
     ):
         # 允许依赖注入：测试时可传 mock，生产用工厂默认实现
-        self.embedder = embedder or get_embedder()
+        # bind_embedder_to_namespace=True 时，按 namespace 编码的模型版本自动选
+        # embedder——蓝绿/灰度迁移必备（蓝用 A 模型、绿用 B 模型，查询必须各用各的）。
+        # 默认 False 保持向后兼容：显式传 embedder 或走全局默认，现有调用不受影响。
+        if embedder is not None:
+            self.embedder = embedder
+        elif bind_embedder_to_namespace:
+            from app.factory import embedder_for_namespace
+            self.embedder = embedder_for_namespace(namespace or active_namespace())
+        else:
+            self.embedder = get_embedder()
         self.store = store or get_vectorstore()
         self.namespace = namespace or active_namespace()
 

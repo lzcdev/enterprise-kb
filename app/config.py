@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     MILVUS_URI: str = "http://localhost:19530"
     COLLECTION_NAME: str = "knowledge_base"
 
+    # ===== 租户存储（波次1 数据持久化）=====
+    # backend: "memory"（默认，零依赖） / "pg"（PostgreSQL 持久化租户配置）
+    # 为什么单独一个开关而非跟着 TIER 走？租户数据是否持久化与向量库档位是两件事，
+    # 允许"向量库还在内存、但租户配置已落库"这种渐进升级组合。
+    TENANT_STORE_BACKEND: str = "memory"
+    PG_DSN: str = "postgresql://lzc@127.0.0.1:5432/enterprise_kb_test"
+
     # ===== 档位切换：prototype / local-prod / enterprise =====
     # 同一套代码，换这个配置即可切换整条链路的实现，不改业务代码。
     #

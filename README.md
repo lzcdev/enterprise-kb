@@ -44,6 +44,14 @@
 - [x] 任务 5 LLM 生成与 FastAPI：三段式 prompt、`[n]` 引用溯源、RAGService 编排、`/health` + `/ask` 接口
 - [x] 任务 6 多租户体系：四层配置覆盖链、身份闸门、越权状态码映射、租户管理接口
 - [x] 任务 7 简历与面试材料：RESUME.md + INTERVIEW.md
+- [x] 波次 0 安全与可观测加固：JWT 鉴权、输入校验、trace_id 全链路日志
+- [x] 波次 1（部分）数据持久化：租户注册表可切 PostgreSQL、向量可切 Chroma 持久化，
+      跨进程重启验证通过；MinIO 原文存储待接入。见 [docs/ROLLOUT.md](docs/ROLLOUT.md)
+- [x] 波次 2 真语义模型：Qwen3-Embedding-0.6B 已接入并实测；模型-索引联动
+      （切 namespace 自动切 embedder）有 15 项测试固化；蓝绿迁移真实质量对比
+      **哈希 0.50 → Qwen3 0.75（+0.25）**。见 [docs/ROLLOUT.md](docs/ROLLOUT.md)
+- [x] CI/CD 与灰度蓝绿：GitHub Actions 四道卡点 + 分支保护门禁（已实测拦截）、
+      状态机切流与秒级回滚。见 [docs/RELEASE.md](docs/RELEASE.md)
 
 ## 快速开始
 
@@ -65,6 +73,23 @@
 
 # 多租户三大能力演示（隔离 / 配置覆盖 / 越权拦截）
 .venv/bin/python scripts/show_tenancy.py
+
+# 波次1 持久化验证：两个独立进程模拟服务重启，证明数据落盘不丢
+pip install -q psycopg2-binary chromadb          # 轻量依赖，无需 key/GPU
+.venv/bin/python scripts/verify_pg_persistence.py      # 租户配置跨进程持久化
+.venv/bin/python scripts/verify_chroma_persistence.py  # 向量索引跨进程持久化
+# PG 集成测试（需本机 PG，默认跳过以免影响 CI）
+KB_PG_TEST=1 .venv/bin/python -m pytest -q tests/test_tenancy_pg.py
+# 切到 PG 后端：TENANT_STORE_BACKEND=pg PG_DSN=postgresql://... .venv/bin/python ...
+
+# 波次2 真模型蓝绿迁移：Deterministic(蓝) → Qwen3(绿) 完整五步
+.venv/bin/python scripts/migrate_qwen3.py              # 控制流（零依赖，CI 可跑）
+pip install -q torch transformers sentence-transformers  # 真模型依赖（首次）
+HF_ENDPOINT=https://hf-mirror.com .venv/bin/python scripts/migrate_qwen3.py --quality
+                                                        # 追加真模型质量对比（自动下载模型）
+# 模型-索引联动的 15 项防回归测试
+.venv/bin/python -m pytest -q tests/test_model_namespace_binding.py
+
 
 # 启动 HTTP 服务并调试 Swagger 文档
 .venv/bin/python -m uvicorn app.api.main:app --reload

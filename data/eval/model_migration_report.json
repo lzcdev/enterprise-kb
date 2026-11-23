@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-11-23T17:54:19+00:00",
+  "blue_model": "deterministic-hash-v1",
+  "green_model": "qwen-qwen3-embedding-0.6b",
+  "query_count": 4,
+  "embedding_metrics": {
+    "blue_top1_acc": 0.5,
+    "green_top1_acc": 0.75
+  },
+  "embedding_delta_top1": 0.25,
+  "rerank_metrics": {
+    "deterministic_top1": "price",
+    "qwen3_rerank_top1": "refund",
+    "qwen3_fixed_misrank": true
+  },
+  "note": "影子读 top1 命中率 + 精排纠正误召回。小样本教学演示，非严格 benchmark。"
+}

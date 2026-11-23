@@ -11,8 +11,9 @@
 - 双塔 Bi-Encoder：query/doc 各自独立编码成向量，doc 可预计算，快，但丢失词级交互。
 - 交叉编码 Cross-Encoder：query 和 doc 拼接后一起过模型，注意力能看到两者交互，
   准，但每个 (query,doc) 对都要单独前向，慢，所以只对 Top10~50 做。
-- 分数不同量纲：cross-encoder 输出常是 0~1，和 cosine 的 -1~1 不能混排，
-  必须重排后重新取 top_n。
+- 分数不同量纲：cross-encoder 输出（Qwen3-Reranker 是可正可负的 logit 差，
+  实测相关 7.17 / 无关 -10.36）和 cosine 的 -1~1 不能混排，
+  必须重排后重新取 top_n。绝不能把 rerank 分数和召回分数直接比较。
 """
 import re
 from typing import Optional
@@ -32,33 +33,33 @@ class LocalReranker:
     def _load(self):
         if self._model is None:
             try:
-                import torch
-                from transformers import AutoTokenizer, AutoModelForSequenceClassification
+                from sentence_transformers import CrossEncoder
             except ImportError as exc:
                 raise RuntimeError(
-                    "本地重排需要 torch + transformers：pip install torch transformers。"
+                    "本地重排需要 sentence-transformers + torch："
+                    "pip install sentence-transformers torch。"
                     "原型档可改 RERANK_BACKEND=deterministic 零依赖跑通链路。"
                 ) from exc
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self._model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
-            self._model.eval()
+            # 关键：必须用 CrossEncoder 而不是 AutoModelForSequenceClassification。
+            # Qwen3-Reranker 的架构是 Qwen3ForCausalLM（生成式），没有分类头；
+            # 若用 AutoModelForSequenceClassification 加载，会随机初始化一个头，
+            # 打分全是噪音。CrossEncoder 内置了 Qwen3-Reranker 专用的 chat template
+            # 和"取 yes token logit"的正确逻辑（实测相关 7.17 / 无关 -10.36）。
+            self._model = CrossEncoder(self.model_name)
         return self._model
 
     def rerank(self, query: str, candidates: list[ScoredChunk], top_n: int) -> list[ScoredChunk]:
         if not candidates:
             return []
         model = self._load()
-        import torch
 
-        # 逐对拼接：(query, doc) 一起送进交叉编码器，模型能看到词级交互
+        # (query, doc) 逐对送进交叉编码器，模型能看到词级交互
         texts = [(query, c.text) for c in candidates]
-        inputs = self._tokenizer(texts, padding=True, truncation=True,
-                                 max_length=512, return_tensors="pt")
-        with torch.no_grad():
-            logits = model(**inputs).logits.squeeze(-1)
-        # 二分类 reranker 取正类 logit；sigmoid 压到 0~1 作为相关性分数
-        scores = torch.sigmoid(logits).tolist()
-        if isinstance(scores, float):
+        scores = model.predict(texts)
+        # predict 单条返回标量、多条返回数组，统一成 list
+        if hasattr(scores, "tolist"):
+            scores = scores.tolist()
+        if isinstance(scores, (int, float)):
             scores = [scores]
 
         reranked = []
